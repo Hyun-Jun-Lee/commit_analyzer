@@ -91,7 +91,31 @@ uv run test_my_repo.py your-username/your-repo --days 3
 
 ### Connecting to Claude Code
 
-Add to your Claude Code configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+#### Method 1: Using --directory flag (Recommended)
+
+1. **Grant execution permissions**:
+   ```bash
+   chmod +x /path/to/commit_analyze/src/main.py
+   ```
+
+2. **Add to your Claude Code configuration** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+   ```json
+   {
+     "mcpServers": {
+       "commit-analyzer": {
+         "command": "uv",
+         "args": [
+           "run",
+           "--directory",
+           "/path/to/commit_analyze/",
+           "src/main.py"
+         ]
+       }
+     }
+   }
+   ```
+
+#### Method 2: Using cwd (Alternative)
 
 ```json
 {
