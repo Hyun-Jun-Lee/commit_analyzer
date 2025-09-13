@@ -769,73 +769,154 @@ module ResponseFormatting {
 }
 ```
 
-## 6. 에러 처리 및 로깅
+## 6. 함수형 에러 처리 및 로깅
 
 ```dsl
-module ErrorHandling {
+module FunctionalErrorHandling {
     
-    strategy ErrorHandlingStrategy {
-        github_api_errors: {
-            rate_limit_exceeded: {
-                action: wait_and_retry
-                message: "GitHub API 요청 한도 초과. 잠시 후 다시 시도합니다."
-                max_retries: 3
-                backoff_strategy: exponential
-            }
-            
-            repository_not_found: {
-                action: return_user_friendly_error
-                message: "리포지토리 '{owner}/{repo}'를 찾을 수 없습니다. 이름을 확인해주세요."
-            }
-            
-            unauthorized: {
-                action: return_config_guidance
-                message: "GitHub API 인증에 실패했습니다. GITHUB_TOKEN을 확인해주세요."
-            }
+    // Result 타입 (Either 모나드)
+    type Result<T, E> = Success<T> | Failure<E>
+    
+    // 함수형 에러 처리 전략
+    error_handling_patterns: {
+        
+        // 모나딕 체이닝
+        monadic_pipeline: {
+            description: "Result 타입으로 에러 전파 없이 파이프라인 처리"
+            pattern: """
+                validateInput(params)
+                  .flatMap(fetchGitHubData)
+                  .flatMap(analyzeCommits) 
+                  .flatMap(formatReport)
+                  .fold(
+                    onSuccess = return_success,
+                    onFailure = handle_error
+                  )
+            """
         }
         
-        network_errors: {
-            timeout: {
-                action: retry_with_increased_timeout
-                max_retries: 2
-                timeout_multiplier: 2
-            }
-            
-            connection_error: {
-                action: return_network_error_message
-                message: "네트워크 연결을 확인해주세요."
-            }
+        // 에러 복구 패턴
+        error_recovery: {
+            retry_with_backoff: "Result<T> -> (RetryConfig -> Result<T>)"
+            fallback_value: "Result<T> -> T -> T"
+            alternative_source: "Result<T> -> (() -> Result<T>) -> Result<T>"
         }
         
-        validation_errors: {
-            invalid_repository_name: {
-                action: return_validation_message
-                message: "올바른 리포지토리 형식: owner/repo-name"
-            }
-            
-            invalid_commit_sha: {
-                action: return_validation_message
-                message: "커밋 SHA는 7-40자리 16진수여야 합니다."
-            }
+        // 에러 변환
+        error_transformation: {
+            map_error: "(E1 -> E2) -> Result<T, E1> -> Result<T, E2>"
+            recover: "(E -> Result<T, E>) -> Result<T, E> -> Result<T, E>"
+            ensure: "(T -> Boolean, E) -> Result<T, E> -> Result<T, E>"
         }
     }
     
-    logging LoggingConfiguration {
-        level: INFO
-        format: structured_json
+    // 구체적 에러 처리 함수
+    error_handlers: {
         
-        log_events: [
-            tool_invocation_start,
-            api_request_start,
-            api_request_complete,
-            error_occurred,
-            tool_invocation_complete
-        ]
+        handle_github_api_error: {
+            signature: "GitHubAPIError -> Result<RetryAction, UserError>"
+            implementation: """
+                match error:
+                  case RateLimitExceeded(retry_after) -> 
+                    Success(WaitAndRetry(exponential_backoff(retry_after)))
+                  case RepositoryNotFound(repo) -> 
+                    Failure(UserError("리포지토리 '{repo}'를 찾을 수 없습니다"))
+                  case Unauthorized -> 
+                    Failure(UserError("GitHub 토큰을 확인해주세요"))
+                  case NetworkError(cause) -> 
+                    Success(RetryWithTimeout(increased_timeout()))
+            """
+        }
         
-        sensitive_data_handling: {
-            github_token: mask_completely
-            api_responses: log_metadata_only
-            user_data: anonymize
+        handle_validation_error: {
+            signature: "ValidationError -> Result<Never, UserError>"
+            implementation: """
+                match error:
+                  case InvalidRepoName(name) -> 
+                    Failure(UserError("올바른 형식: owner/repo-name"))
+                  case InvalidCommitSHA(sha) -> 
+                    Failure(UserError("커밋 SHA는 7-40자리 16진수"))
+                  case InvalidDateRange(days) -> 
+                    Failure(UserError("날짜 범위: 1-30일"))
+            """
+        }
+        
+        handle_analysis_error: {
+            signature: "AnalysisError -> Result<PartialResult, UserError>"
+            implementation: """
+                match error:
+                  case ParseError(file, line) -> 
+                    Success(PartialResult.with_skipped_file(file))
+                  case UnsupportedLanguage(lang) -> 
+                    Success(PartialResult.with_basic_analysis())
+                  case ComplexityTimeout -> 
+                    Success(PartialResult.with_simplified_metrics())
+            """
+        }
+    }
+    
+    // 함수형 로깅 (부작용 격리)
+    functional_logging: {
+        
+        // 로그 데이터 (불변)
+        LogEntry: {
+            timestamp: Instant
+            level: LogLevel  // Debug | Info | Warn | Error
+            event: LogEvent
+            context: Map<String, String>
+            correlation_id: UUID
+        }
+        
+        // 로그 이벤트 타입
+        LogEvent: {
+            AnalysisStarted(repo: RepoIdentifier) |
+            APIRequestSent(endpoint: String, params: Map<String, String>) |
+            APIResponseReceived(status: Int, duration: Duration) |
+            ErrorOccurred(error: AnalysisError, recovery_attempted: Boolean) |
+            AnalysisCompleted(duration: Duration, result_size: Int)
+        }
+        
+        // 로깅 함수 (Reader 모나드)
+        logging_functions: {
+            log_analysis_step: "LogLevel -> String -> ReaderT<LogConfig, IO, Unit>"
+            log_with_context: "Map<String, String> -> LogEvent -> ReaderT<LogConfig, IO, Unit>"
+            structured_log: "LogEntry -> ReaderT<LogConfig, IO, Unit>"
+        }
+        
+        // 로그 설정
+        LogConfig: {
+            level: LogLevel
+            format: "structured_json" | "human_readable"
+            destinations: List<LogDestination>  // Console | File | Remote
+            sensitive_field_mask: Set<String>
+            correlation_tracking: Boolean
+        }
+    }
+    
+    // 모니터링 및 메트릭 (함수형)
+    functional_monitoring: {
+        
+        // 메트릭 타입 (불변)
+        Metric: {
+            Counter(name: String, value: Long, tags: Map<String, String>) |
+            Gauge(name: String, value: Double, tags: Map<String, String>) |
+            Timer(name: String, duration: Duration, tags: Map<String, String>) |
+            Histogram(name: String, values: List<Double>, tags: Map<String, String>)
+        }
+        
+        // 메트릭 수집 함수
+        metric_collectors: {
+            time_operation: "String -> IO<A> -> ReaderT<MetricConfig, IO, (A, Timer)>"
+            count_event: "String -> Map<String, String> -> ReaderT<MetricConfig, IO, Unit>"
+            measure_pipeline_performance: "Pipeline<A, B> -> A -> ReaderT<MetricConfig, IO, (B, List<Metric>)>"
+        }
+        
+        // 건강 상태 체크 (순수)
+        health_checks: {
+            check_github_connectivity: "() -> IO<Result<HealthStatus, ConnectivityError>>"
+            check_rate_limits: "GitHubClient -> IO<Result<RateLimitStatus, APIError>>"
+            check_memory_usage: "() -> IO<MemoryStatus>"
+            aggregate_health: "List<HealthCheck> -> OverallHealth"
         }
     }
 }
@@ -907,60 +988,428 @@ module Configuration {
 }
 ```
 
-## 8. 개발 워크플로우
+## 8. 버티컬 프로젝트 구조
 
 ```dsl
-workflow DevelopmentWorkflow {
+project_structure VerticalArchitecture {
+    paradigm: "Feature-based vertical slicing"
+    organization: "domain_driven_modules"
+    
+    root_structure: {
+        src/
+        ├── core/                    # 핵심 도메인 로직 (순수 함수)
+        │   ├── domain/             # 도메인 모델과 타입 정의
+        │   │   ├── types.py        # 불변 데이터 타입들
+        │   │   ├── errors.py       # 에러 타입 정의
+        │   │   └── rules.py        # 비즈니스 규칙
+        │   ├── analysis/           # 분석 로직 (순수 함수들)
+        │   │   ├── work_type_inference.py
+        │   │   ├── metrics_calculation.py
+        │   │   ├── pattern_detection.py
+        │   │   └── data_transformation.py
+        │   └── utils/              # 유틸리티 함수들
+        │       ├── functional.py   # 함수형 프로그래밍 유틸
+        │       ├── validation.py   # 입력 검증 함수들
+        │       └── formatting.py   # 출력 포맷팅 함수들
+        │
+        ├── features/               # MCP 도구별 버티컬 슬라이스
+        │   ├── analyze_commits/    # analyze_commits 도구의 모든 것
+        │   │   ├── __init__.py
+        │   │   ├── handler.py      # MCP 핸들러 (I/O 경계)
+        │   │   ├── pipeline.py     # 분석 파이프라인 조합
+        │   │   ├── rules.py        # 이 기능 특화 규칙들
+        │   │   └── formatters.py   # 출력 포맷터
+        │   │
+        │   ├── analyze_code_changes/
+        │   │   ├── __init__.py
+        │   │   ├── handler.py
+        │   │   ├── pipeline.py
+        │   │   ├── complexity_analysis.py
+        │   │   ├── structural_analysis.py
+        │   │   └── formatters.py
+        │   │
+        │   ├── get_commit_diff/
+        │   │   ├── __init__.py
+        │   │   ├── handler.py
+        │   │   ├── pipeline.py
+        │   │   ├── diff_parser.py
+        │   │   └── formatters.py
+        │   │
+        │   └── repository_summary/
+        │       ├── __init__.py
+        │       ├── handler.py
+        │       ├── pipeline.py
+        │       ├── activity_analyzer.py
+        │       └── formatters.py
+        │
+        ├── infrastructure/         # 외부 시스템 연동 (부작용 격리)
+        │   ├── github/            # GitHub API 클라이언트
+        │   │   ├── __init__.py
+        │   │   ├── client.py      # HTTP 클라이언트
+        │   │   ├── auth.py        # 인증 처리
+        │   │   ├── rate_limiter.py # 요청 제한 처리
+        │   │   └── models.py      # API 응답 모델
+        │   │
+        │   ├── mcp/               # MCP 프로토콜 처리
+        │   │   ├── __init__.py
+        │   │   ├── server.py      # MCP 서버 구현
+        │   │   ├── protocol.py    # 프로토콜 핸들링
+        │   │   └── tools.py       # 도구 등록 및 라우팅
+        │   │
+        │   ├── logging/           # 로깅 시스템
+        │   │   ├── __init__.py
+        │   │   ├── structured.py  # 구조화된 로깅
+        │   │   ├── correlation.py # 상관관계 추적
+        │   │   └── formatters.py  # 로그 포맷터
+        │   │
+        │   └── monitoring/        # 메트릭 및 모니터링
+        │       ├── __init__.py
+        │       ├── metrics.py     # 메트릭 수집
+        │       ├── health.py      # 건강 상태 체크
+        │       └── performance.py # 성능 측정
+        │
+        ├── config/                # 설정 관리
+        │   ├── __init__.py
+        │   ├── settings.py        # 환경별 설정
+        │   ├── validation.py      # 설정 검증
+        │   └── constants.py       # 상수 정의
+        │
+        └── main.py               # 애플리케이션 진입점
+    }
+    
+    vertical_slice_pattern: {
+        description: "각 기능이 독립적인 수직 슬라이스를 형성"
+        
+        feature_structure: {
+            handler: "MCP 도구 인터페이스 (I/O 경계)"
+            pipeline: "순수 함수들의 조합으로 비즈니스 로직 구현"
+            rules: "해당 기능 특화 규칙과 정책"
+            formatters: "출력 형식 변환 (순수 함수)"
+        }
+        
+        dependencies: {
+            inward: "feature → core (의존성 역전)"
+            outward: "feature → infrastructure (추상화 통해)"
+            horizontal: "feature간 직접 의존성 금지"
+        }
+        
+        benefits: [
+            "기능별 독립적 개발 및 테스트",
+            "명확한 책임 분리",
+            "수평 확장성 (새 도구 추가 용이)",
+            "함수형 파이프라인의 명확한 구조화"
+        ]
+    }
+    
+    functional_organization: {
+        pure_functions: {
+            location: "core/ + features/*/pipeline.py"
+            characteristics: [
+                "부작용 없음",
+                "테스트 용이성",
+                "조합 가능성",
+                "병렬 처리 안전성"
+            ]
+        }
+        
+        side_effects: {
+            location: "infrastructure/ + features/*/handler.py"
+            characteristics: [
+                "I/O 경계로 격리",
+                "의존성 주입으로 테스트 가능",
+                "에러 처리 전용 영역"
+            ]
+        }
+        
+        composition_rules: {
+            "handler → pipeline → core": "의존성 방향"
+            "pure_function ∘ pure_function": "함수 조합"
+            "IO<Result<T, E>>": "부작용 + 에러 처리 타입"
+        }
+    }
+}
+```
+
+```dsl
+detailed_file_organization FileStructure {
+    
+    // 핵심 도메인 (순수 함수 영역)
+    core_domain: {
+        "src/core/domain/types.py": {
+            purpose: "불변 데이터 타입과 도메인 모델"
+            content: [
+                "AnalysisData", "FileChange", "WorkType", 
+                "WorkStatus", "CodeContext", "AnalysisResult"
+            ]
+            pattern: "dataclass(frozen=True) + 계산된 속성"
+        }
+        
+        "src/core/domain/errors.py": {
+            purpose: "에러 타입 계층구조"
+            content: [
+                "AnalysisError", "ValidationError", "GitHubAPIError",
+                "RateLimitError", "NetworkError", "ParseError"
+            ]
+            pattern: "Union types for functional error handling"
+        }
+        
+        "src/core/domain/rules.py": {
+            purpose: "비즈니스 규칙과 정책"
+            content: [
+                "WorkTypeRules", "WorkStatusRules", "CodeContextRules"
+            ]
+            pattern: "Rule = Callable[[T], bool] + output mapping"
+        }
+    }
+    
+    // 분석 로직 (순수 함수들)
+    core_analysis: {
+        "src/core/analysis/work_type_inference.py": {
+            functions: [
+                "infer_from_file_patterns: List[FileChange] -> List[WorkType]",
+                "infer_from_code_content: CodeContent -> List[WorkType]", 
+                "apply_work_type_rules: List[Rule] -> FileChange -> WorkType"
+            ]
+        }
+        
+        "src/core/analysis/metrics_calculation.py": {
+            functions: [
+                "calculate_velocity: List[Commit] -> VelocityMetrics",
+                "calculate_complexity: CodeChange -> ComplexityMetrics",
+                "calculate_patterns: List[Commit] -> TimePatterns"
+            ]
+        }
+        
+        "src/core/analysis/pattern_detection.py": {
+            functions: [
+                "detect_hotspots: List[FileChange] -> List[Hotspot]",
+                "detect_clusters: List[FileChange] -> List[Cluster]",
+                "detect_trends: List[Metric] -> List[Trend]"
+            ]
+        }
+        
+        "src/core/analysis/data_transformation.py": {
+            functions: [
+                "extract_diffs: GitHubResponse -> List[DiffData]",
+                "parse_commits: RawCommitData -> List[CommitData]",
+                "normalize_file_paths: List[str] -> List[FilePath]"
+            ]
+        }
+    }
+    
+    // 기능별 버티컬 슬라이스
+    feature_slices: {
+        "src/features/analyze_commits/": {
+            "handler.py": {
+                purpose: "MCP 도구 진입점 (I/O 경계)"
+                pattern: """
+                async def handle_analyze_commits(params: AnalyzeCommitsParams) -> Result[Report, Error]:
+                    return await (
+                        validate_params(params)
+                        .and_then_async(fetch_github_data)
+                        .and_then(run_analysis_pipeline)
+                        .map(format_commit_analysis)
+                    )
+                """
+            }
+            
+            "pipeline.py": {
+                purpose: "순수 함수들의 조합"
+                pattern: """
+                def analysis_pipeline(github_data: GitHubData) -> AnalysisResult:
+                    return pipe(
+                        github_data,
+                        extract_commit_patterns,
+                        infer_work_types,
+                        calculate_metrics,
+                        aggregate_results
+                    )
+                """
+            }
+            
+            "rules.py": {
+                purpose: "커밋 분석 특화 규칙"
+                content: "commit_patterns, author_analysis_rules, time_pattern_rules"
+            }
+            
+            "formatters.py": {
+                purpose: "Markdown 리포트 생성 (순수 함수)"
+                functions: [
+                    "format_commit_analysis: AnalysisResult -> MarkdownReport",
+                    "format_author_stats: AuthorStats -> str",
+                    "format_time_patterns: TimePatterns -> str"
+                ]
+            }
+        }
+        
+        "src/features/analyze_code_changes/": {
+            structure: "handler.py + pipeline.py + rules.py + formatters.py"
+            specialization: [
+                "complexity_analysis.py: 복잡도 메트릭 계산",
+                "structural_analysis.py: 코드 구조 변화 분석"
+            ]
+        }
+        
+        "src/features/get_commit_diff/": {
+            structure: "handler.py + pipeline.py + rules.py + formatters.py"
+            specialization: [
+                "diff_parser.py: Git diff 파싱 및 분석"
+            ]
+        }
+        
+        "src/features/repository_summary/": {
+            structure: "handler.py + pipeline.py + rules.py + formatters.py"
+            specialization: [
+                "activity_analyzer.py: 저장소 활동 패턴 분석"
+            ]
+        }
+    }
+    
+    // 인프라스트럭처 (부작용 격리)
+    infrastructure: {
+        "src/infrastructure/github/client.py": {
+            purpose: "GitHub API HTTP 클라이언트"
+            pattern: "async def get_commits(repo: str) -> IO[Result[List[Commit], APIError]]"
+        }
+        
+        "src/infrastructure/mcp/server.py": {
+            purpose: "MCP 서버 구현"
+            pattern: "도구 등록 및 라우팅, JSON-RPC 처리"
+        }
+        
+        "src/infrastructure/logging/structured.py": {
+            purpose: "구조화된 로깅"
+            pattern: "ReaderT[LogConfig, IO, Unit] 모나드 기반"
+        }
+    }
+    
+    // 설정 및 진입점
+    application_layer: {
+        "src/config/settings.py": {
+            purpose: "환경 설정 관리"
+            pattern: "불변 설정 객체 + 검증 함수"
+        }
+        
+        "src/main.py": {
+            purpose: "애플리케이션 진입점"
+            pattern: """
+            def main():
+                config = load_config()
+                server = create_mcp_server(config)
+                register_tools(server)
+                run_server(server)
+            """
+        }
+    }
+}
+```
+
+## 9. 함수형 개발 워크플로우
+
+```dsl
+workflow FunctionalDevelopmentWorkflow {
     
     phase Setup {
-        steps: [
-            create_project_directory,
-            install_dependencies,
-            configure_github_token,
-            setup_claude_code_config,
-            test_mcp_connection
+        approach: "순수 함수 우선, 부작용 격리"
+        
+        functional_setup_pipeline: [
+            validate_environment_config,
+            create_immutable_config,
+            initialize_pure_functions,
+            setup_io_boundary_layer,
+            verify_pipeline_composition
         ]
         
-        validation: {
-            github_api_access: verify_token_permissions
-            mcp_protocol: test_handshake
-            claude_code_integration: check_tool_discovery
+        validation_functions: {
+            verify_github_token: "Config -> Result<ValidConfig, ConfigError>"
+            test_mcp_handshake: "MCPConfig -> IO<Result<HandshakeSuccess, MCPError>>"
+            validate_function_composition: "Pipeline -> Result<ValidPipeline, CompositionError>"
         }
     }
     
-    phase Development {
-        tools: [
-            "Claude Code for implementation",
-            "MCP Inspector for protocol debugging",
-            "GitHub API for testing data"
+    phase FunctionalDevelopment {
+        principles: [
+            "순수 함수부터 구현",
+            "부작용을 경계로 밀어내기",
+            "타입으로 불변성 보장",
+            "속성 기반 테스트 활용"
         ]
+        
+        development_pipeline: {
+            step1_pure_logic: {
+                description: "비즈니스 로직을 순수 함수로 구현"
+                testing: "속성 기반 테스트 (Property-based testing)"
+                tools: ["QuickCheck", "Hypothesis", "fast-check"]
+            }
+            
+            step2_composition: {
+                description: "작은 함수들을 파이프라인으로 조합"
+                testing: "파이프라인 단위 테스트"
+                validation: "타입 체크 및 조합 규칙 검증"
+            }
+            
+            step3_io_integration: {
+                description: "I/O 경계에서 순수 함수 연결"
+                testing: "모의 객체를 이용한 통합 테스트"
+                monitoring: "부작용 실행 메트릭"
+            }
+        }
         
         testing_strategy: {
-            unit_tests: tool_function_validation
-            integration_tests: github_api_interaction
-            end_to_end_tests: claude_code_user_scenarios
+            property_based_tests: {
+                description: "순수 함수의 속성 검증"
+                examples: [
+                    "forall files: analyze_work_type(file).is_valid_work_type()",
+                    "forall commits: extract_metrics(commits).sum >= 0",
+                    "forall rules, file: apply_rules(rules, file).length <= rules.length"
+                ]
+            }
+            
+            pipeline_tests: {
+                description: "함수 조합의 동작 검증"
+                approach: "입력-출력 쌍 테스트 + 중간 단계 검증"
+            }
+            
+            integration_tests: {
+                description: "I/O 경계 테스트"
+                approach: "의존성 주입으로 실제 GitHub API 모의"
+            }
         }
         
-        debugging: {
-            mcp_protocol_issues: use_stdio_logging
-            github_api_issues: check_rate_limits_and_permissions
-            claude_code_issues: verify_config_and_restart
+        debugging_techniques: {
+            pipeline_tracing: {
+                description: "각 파이프라인 단계의 입력/출력 추적"
+                implementation: "Reader 모나드로 디버그 컨텍스트 전달"
+            }
+            
+            pure_function_isolation: {
+                description: "순수 함수는 REPL에서 직접 테스트"
+                benefit: "빠른 피드백 루프"
+            }
+            
+            property_shrinking: {
+                description: "실패한 속성 테스트의 최소 반례 찾기"
+                tools: "QuickCheck shrinking"
+            }
         }
     }
     
-    phase Deployment {
-        target: local_development_environment
+    phase FunctionalDeployment {
+        immutable_deployment: {
+            description: "불변 배포 아티팩트"
+            approach: "함수형 설정 + 순수 함수 번들"
+        }
         
-        installation_methods: [
-            manual_setup,
-            uv_package_manager,
-            docker_container
-        ]
+        monitoring_pipeline: {
+            metrics_collection: "순수 함수로 메트릭 계산"
+            health_monitoring: "함수형 건강 상태 체크"
+            error_aggregation: "Result 타입 기반 에러 수집"
+        }
         
-        monitoring: {
-            health_checks: periodic_github_api_test
-            performance: response_time_tracking
-            errors: structured_error_logging
+        performance_optimization: {
+            memoization: "순수 함수 결과 캐싱"
+            lazy_evaluation: "필요시에만 계산"
+            parallel_processing: "독립적 분석 작업 병렬화"
         }
     }
 }
