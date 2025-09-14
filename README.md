@@ -5,10 +5,10 @@ A Model Context Protocol (MCP) server that analyzes GitHub repository commits to
 ## 🎯 Key Features
 
 ### **Smart Commit Analysis**
-- Analyzes commits from the **latest commit date** backwards (not from current time)
+- Analyzes commits from the **most recent N days with actual commit activity**
+- Gets commits from the N most recent days that have commits (not calendar days)
 - Perfect for both active and dormant repositories
-- Configurable time range (1-30 days)
-- Handles repositories with irregular commit patterns
+- Handles repositories with irregular commit patterns intelligently
 
 ### **Code-Based Work Detection**
 - Infers work types from actual code changes, not unreliable commit messages
@@ -82,11 +82,14 @@ src/
 Before connecting to Claude Code, test the server functionality:
 
 ```bash
-# Test repository commits (latest commit - N days)
-uv run test_my_repo.py microsoft/vscode --days 7
+# Test repository commits (N most recent days with commits)
+uv run tests/test_analyze_commits.py microsoft/vscode --days 7
 
 # Test your own repository
-uv run test_my_repo.py your-username/your-repo --days 3
+uv run tests/test_analyze_commits.py your-username/your-repo --days 3
+
+# Or use the unified test runner
+uv run tests/run_tool_test.py analyze_commits your-username/your-repo --days 3
 ```
 
 ### Connecting to Claude Code
@@ -139,11 +142,15 @@ uv run python src/main.py
 ## 🛠️ MCP Tools
 
 ### `analyze_commits`
-Analyzes recent commits from the repository's latest commit date.
+Analyzes commits from the most recent N days that have actual commit activity.
+
+**How it works**: Instead of analyzing a calendar date range, this tool finds the N most recent days where commits actually occurred and analyzes all commits from those days.
+
+**Example**: If commits exist on days [Sept 10, Aug 31, Aug 30, Aug 29] and you set `days=3`, it will analyze all commits from [Sept 10, Aug 31, Aug 30] - ensuring meaningful results regardless of commit frequency.
 
 **Parameters**:
 - `repository` (string): Repository in "owner/repo" format
-- `days` (integer): Days to analyze from latest commit (1-30, default: 7)
+- `days` (integer): Number of most recent days with commits to analyze (1-30, default: 7)
 - `max_commits` (integer): Maximum commits to analyze (default: 100)
 
 **Example**:
@@ -191,7 +198,7 @@ Deep analysis of code changes with focus areas.
       "primary_language": "TypeScript",
       "stars": 176000
     },
-    "analysis_period": "2025-09-06 to 2025-09-13 (7 days)",
+    "analysis_period": "7 most recent days with commits",
     "total_commits": 45,
     "unique_authors": 12,
     "work_distribution": {
@@ -236,19 +243,43 @@ commit_analyze/
 │   │   └── analysis/   # Analysis algorithms
 │   ├── infrastructure/ # External integrations
 │   └── main.py        # Entry point
-├── test_my_repo.py    # Testing utility
+├── tests/             # Test scripts
+│   ├── test_analyze_commits.py      # Individual tool tests
+│   ├── test_get_commit_diff.py
+│   ├── test_repository_summary.py
+│   ├── test_analyze_code_changes.py
+│   └── run_tool_test.py             # Unified test runner
 ├── pyproject.toml     # Project configuration
 └── .env              # Environment variables
 ```
 
 ### Running Tests
 
+#### Individual Tool Tests
+```bash
+# Test each MCP tool individually
+uv run tests/test_analyze_commits.py microsoft/vscode --days 7
+uv run tests/test_get_commit_diff.py microsoft/vscode abc1234567
+uv run tests/test_repository_summary.py microsoft/vscode
+uv run tests/test_analyze_code_changes.py microsoft/vscode --days 5 --deep-analysis
+```
+
+#### Unified Test Runner
+```bash
+# Run specific tool
+uv run tests/run_tool_test.py analyze_commits microsoft/vscode --days 7
+
+# Run all tools demo
+uv run tests/run_tool_test.py demo microsoft/vscode
+
+# List available tools
+uv run tests/run_tool_test.py list
+```
+
+#### Connection Tests
 ```bash
 # Test GitHub connection
 uv run python -c "from src.infrastructure.github_client import test_github_connection; print(test_github_connection())"
-
-# Test specific repository
-uv run test_my_repo.py owner/repo --days 5
 ```
 
 ### Code Style
@@ -262,7 +293,7 @@ The project follows functional programming principles:
 
 ## 🎨 Key Design Decisions
 
-1. **Latest Commit Reference**: Analysis period calculated from repository's latest commit, not current time
+1. **Activity-Based Days**: Analyzes N most recent days with actual commits, not calendar days
 2. **Code Over Messages**: Work type inference based on file changes, not commit messages
 3. **Functional Core**: Pure functional core with imperative shell
 4. **FastMCP**: Simplified MCP server implementation with decorators

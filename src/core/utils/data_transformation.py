@@ -429,25 +429,70 @@ def calculate_file_hotspots(diffs: List[DiffData]) -> List[FileHotspot]:
 # Output Formatting Transformations
 # ============================================================================
 
-def transform_to_json_serializable(obj: Any) -> Any:
-    """Transform objects to JSON-serializable format."""
-    if hasattr(obj, '__dict__'):
-        result = {}
-        for key, value in obj.__dict__.items():
-            result[key] = transform_to_json_serializable(value)
-        return result
-    elif isinstance(obj, list):
-        return [transform_to_json_serializable(item) for item in obj]
-    elif isinstance(obj, dict):
-        return {key: transform_to_json_serializable(value) for key, value in obj.items()}
-    elif isinstance(obj, datetime):
-        return obj.isoformat()
-    elif isinstance(obj, Path):
-        return str(obj)
-    elif hasattr(obj, 'value'):  # Enum
-        return obj.value
-    else:
+def transform_to_json_serializable(obj: Any, max_depth: int = 10, _current_depth: int = 0, _seen: Optional[set] = None) -> Any:
+    """Transform objects to JSON-serializable format with recursion protection."""
+    # Initialize seen set for circular reference detection
+    if _seen is None:
+        _seen = set()
+
+    # Check depth limit
+    if _current_depth > max_depth:
+        return f"<max depth {max_depth} exceeded>"
+
+    # Handle None
+    if obj is None:
+        return None
+
+    # Handle primitive types first (no recursion needed)
+    if isinstance(obj, (str, int, float, bool)):
         return obj
+
+    # Handle datetime
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+
+    # Handle Path
+    if isinstance(obj, Path):
+        return str(obj)
+
+    # Handle Enum
+    if hasattr(obj, 'value') and hasattr(obj.__class__, '__mro__') and 'Enum' in str(obj.__class__.__mro__):
+        return obj.value
+
+    # Check for circular references (for objects with memory address)
+    obj_id = id(obj)
+    if obj_id in _seen:
+        return f"<circular reference to {obj.__class__.__name__}>"
+
+    # Add to seen set
+    _seen.add(obj_id)
+
+    try:
+        # Handle list
+        if isinstance(obj, list):
+            return [transform_to_json_serializable(item, max_depth, _current_depth + 1, _seen) for item in obj]
+
+        # Handle dict
+        elif isinstance(obj, dict):
+            return {key: transform_to_json_serializable(value, max_depth, _current_depth + 1, _seen)
+                   for key, value in obj.items()}
+
+        # Handle objects with __dict__
+        elif hasattr(obj, '__dict__'):
+            result = {}
+            for key, value in obj.__dict__.items():
+                # Skip private attributes to avoid internal object references
+                if not key.startswith('_'):
+                    result[key] = transform_to_json_serializable(value, max_depth, _current_depth + 1, _seen)
+            return result
+
+        # Default: convert to string
+        else:
+            return str(obj)
+
+    finally:
+        # Remove from seen set when done processing
+        _seen.discard(obj_id)
 
 
 def format_analysis_summary(result: AnalysisResult) -> str:

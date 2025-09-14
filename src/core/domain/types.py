@@ -6,7 +6,7 @@ All types are immutable and follow functional programming principles.
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import FrozenSet, List, Optional, Dict, Union
+from typing import FrozenSet, List, Optional, Dict, Union, Any
 from pathlib import Path
 
 
@@ -73,6 +73,23 @@ class RepositoryInfo:
     html_url: str
     clone_url: str
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'owner': self.owner,
+            'name': self.name,
+            'full_name': f'{self.owner}/{self.name}',
+            'description': self.description,
+            'primary_language': self.primary_language,
+            'stars_count': self.stars_count,
+            'stargazers_count': self.stars_count,  # Alias for compatibility
+            'forks_count': self.forks_count,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat(),
+            'html_url': self.html_url,
+            'clone_url': self.clone_url
+        }
+
 
 @dataclass(frozen=True)
 class CommitData:
@@ -86,10 +103,25 @@ class CommitData:
     committer_email: str
     committed_date: datetime
     parent_shas: List[str]
-    
+
     def is_merge_commit(self) -> bool:
         """Check if this is a merge commit."""
         return len(self.parent_shas) > 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'sha': self.sha,
+            'message': self.message,
+            'author': self.author,
+            'author_email': self.author_email,
+            'authored_date': self.authored_date.isoformat(),
+            'committer': self.committer,
+            'committer_email': self.committer_email,
+            'committed_date': self.committed_date.isoformat(),
+            'parent_shas': self.parent_shas,
+            'is_merge_commit': self.is_merge_commit()
+        }
 
 
 @dataclass(frozen=True)
@@ -101,23 +133,37 @@ class FileChange:
     change_type: ChangeType
     content_before: Optional[str] = None
     content_after: Optional[str] = None
-    
+
     def net_lines(self) -> int:
         """Calculate net line changes."""
         return self.lines_added - self.lines_deleted
-    
+
     def is_small_change(self) -> bool:
         """Check if this is a small change (< 10 lines)."""
         return (self.lines_added + self.lines_deleted) < 10
-    
+
     def is_binary_file(self) -> bool:
         """Check if this is a binary file."""
         binary_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip', '.exe'}
         return self.path.suffix.lower() in binary_extensions
-    
+
     def file_extension(self) -> str:
         """Get file extension."""
         return self.path.suffix.lower()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'path': str(self.path),
+            'lines_added': self.lines_added,
+            'lines_deleted': self.lines_deleted,
+            'change_type': self.change_type.value,
+            'content_before': self.content_before[:1000] if self.content_before else None,  # Limit size
+            'content_after': self.content_after[:1000] if self.content_after else None,  # Limit size
+            'net_lines': self.net_lines(),
+            'is_small_change': self.is_small_change(),
+            'file_extension': self.file_extension()
+        }
 
 
 @dataclass(frozen=True)
@@ -127,14 +173,25 @@ class DiffData:
     file_changes: List[FileChange]
     total_additions: int
     total_deletions: int
-    
+
     def net_changes(self) -> int:
         """Calculate net changes across all files."""
         return self.total_additions - self.total_deletions
-    
+
     def files_modified_count(self) -> int:
         """Count of files modified."""
         return len(self.file_changes)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'commit_sha': self.commit_sha,
+            'file_changes': [fc.to_dict() for fc in self.file_changes],
+            'total_additions': self.total_additions,
+            'total_deletions': self.total_deletions,
+            'net_changes': self.net_changes(),
+            'files_modified_count': self.files_modified_count()
+        }
 
 
 @dataclass(frozen=True)

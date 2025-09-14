@@ -16,7 +16,7 @@ src_path = Path(__file__).parent / 'src'
 sys.path.insert(0, str(src_path))
 
 from dotenv import load_dotenv
-from infrastructure.github_client import GitHubAPIClient
+from src.infrastructure.github_client import GitHubAPIClient
 
 def test_repository_commits(repository: str, days: int = 3):
     """실제 repository에서 최신 commit 기준 지정된 일수의 commit 조회 테스트"""

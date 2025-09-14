@@ -40,10 +40,10 @@ async def handle_analyze_commits(arguments: Dict[str, Any]) -> Result[Dict[str, 
     
     # Validate parameters
     validation_result = validate_analyze_commits_params(arguments)
-    if not validation_result:
+    if validation_result.is_err():
         return validation_result
-    
-    params = validation_result.value
+
+    params = validation_result.unwrap()
     
     # Run analysis pipeline
     return await run_commit_analysis_pipeline(
@@ -60,10 +60,10 @@ async def handle_get_commit_diff(arguments: Dict[str, Any]) -> Result[Dict[str, 
     
     # Validate parameters
     validation_result = validate_get_commit_diff_params(arguments)
-    if not validation_result:
+    if validation_result.is_err():
         return validation_result
-    
-    params = validation_result.value
+
+    params = validation_result.unwrap()
     
     # Run diff pipeline
     return await run_commit_diff_pipeline(
@@ -80,10 +80,10 @@ async def handle_repository_summary(arguments: Dict[str, Any]) -> Result[Dict[st
     
     # Validate parameters
     validation_result = validate_repository_summary_params(arguments)
-    if not validation_result:
+    if validation_result.is_err():
         return validation_result
-    
-    params = validation_result.value
+
+    params = validation_result.unwrap()
     
     # Run summary pipeline
     return await run_repository_summary_pipeline(
@@ -96,14 +96,14 @@ async def handle_analyze_code_changes(arguments: Dict[str, Any]) -> Result[Dict[
     """Handle analyze_code_changes tool call."""
     # Import here to avoid circular imports
     from .pipelines import run_code_analysis_pipeline
-    
+
     # Validate parameters
     validation_result = validate_analyze_code_changes_params(arguments)
-    if not validation_result:
+    if validation_result.is_err():
         return validation_result
-    
-    params = validation_result.value
-    
+
+    params = validation_result.unwrap()
+
     # Run code analysis pipeline
     return await run_code_analysis_pipeline(
         owner=params['owner'],
@@ -137,12 +137,13 @@ async def analyze_commits(
     arguments = {"owner": owner, "repo": repo, "days": days}
     
     result = await handle_analyze_commits(arguments)
-    
-    if result:
-        data = result.value
+
+    if result.is_ok():
+        data = result.unwrap()
         return format_commit_analysis_response(data)
     else:
-        error_msg = format_user_friendly_message(result.error)
+        error = result.unwrap_err()
+        error_msg = format_user_friendly_message(error)
         return f"❌ **Error**: {error_msg}"
 
 
@@ -166,12 +167,13 @@ async def get_commit_diff(
     arguments = {"owner": owner, "repo": repo, "commit_sha": commit_sha}
     
     result = await handle_get_commit_diff(arguments)
-    
-    if result:
-        data = result.value
+
+    if result.is_ok():
+        data = result.unwrap()
         return format_commit_diff_response(data)
     else:
-        error_msg = format_user_friendly_message(result.error)
+        error = result.unwrap_err()
+        error_msg = format_user_friendly_message(error)
         return f"❌ **Error**: {error_msg}"
 
 
@@ -193,12 +195,13 @@ async def repository_summary(
     arguments = {"owner": owner, "repo": repo}
     
     result = await handle_repository_summary(arguments)
-    
-    if result:
-        data = result.value
+
+    if result.is_ok():
+        data = result.unwrap()
         return format_repository_summary_response(data)
     else:
-        error_msg = format_user_friendly_message(result.error)
+        error = result.unwrap_err()
+        error_msg = format_user_friendly_message(error)
         return f"❌ **Error**: {error_msg}"
 
 
@@ -229,12 +232,13 @@ async def analyze_code_changes(
     }
     
     result = await handle_analyze_code_changes(arguments)
-    
-    if result:
-        data = result.value
+
+    if result.is_ok():
+        data = result.unwrap()
         return format_code_analysis_response(data)
     else:
-        error_msg = format_user_friendly_message(result.error)
+        error = result.unwrap_err()
+        error_msg = format_user_friendly_message(error)
         return f"❌ **Error**: {error_msg}"
 
 
@@ -243,77 +247,107 @@ async def analyze_code_changes(
 # ============================================================================
 
 def format_commit_analysis_response(data: Dict[str, Any]) -> str:
-    """Format commit analysis response."""
-    # Extract key metrics
-    summary = data.get('summary', {})
-    work_patterns = data.get('work_patterns', {})
-    
-    primary_work = summary.get('primary_work_type', 'unknown')
-    total_commits = summary.get('total_commits_analyzed', 0)
-    completion_rate = summary.get('completion_rate', 0)
-    
-    # Format response
+    """Format commit analysis response with full data for Claude Code."""
+    import json
+
+    # Create comprehensive response with both human-readable summary and full data
+    repo = data.get('repository', {})
+    commits = data.get('commits', [])
+    diffs = data.get('diffs', [])
+
     response = f"""📊 **Commit Analysis Report**
 
-**Overview:**
-- Primary work type: {primary_work.replace('_', ' ').title()}
-- Total commits analyzed: {total_commits}
-- Work completion rate: {completion_rate:.1%}
+**Repository:** {repo.get('full_name', 'Unknown')}
+**Language:** {repo.get('primary_language', 'Unknown')}
+**Stars:** {repo.get('stars_count', 0):,}
+**Period:** {data.get('analysis_period_days', 7)} days
 
-**Work Distribution:**"""
-    
-    work_dist = summary.get('work_type_distribution', {})
-    for work_type, count in work_dist.items():
-        if count > 0:
-            response += f"\n- {work_type.replace('_', ' ').title()}: {count}"
-    
-    # Add development patterns
-    patterns = summary.get('development_patterns', [])
-    if patterns:
-        response += f"\n\n**Development Patterns:**"
-        for pattern in patterns:
-            response += f"\n- {pattern.replace('_', ' ').title()}"
-    
-    # Add language distribution
-    languages = summary.get('language_distribution', {})
-    if languages:
-        response += f"\n\n**Languages Used:**"
-        for lang, files in languages.items():
-            response += f"\n- {lang}: {files} files"
-    
+**Summary:** {data.get('summary', 'No summary available')}
+
+**Statistics:**
+- Total Commits: {data.get('total_commits', 0)}
+- Unique Authors: {data.get('unique_authors', 0)}
+
+**Recent Commits Preview:**"""
+
+    # Show sample commits for human readability
+    for i, commit in enumerate(commits[:5], 1):
+        sha = commit.get('sha', 'unknown')[:8]
+        message = commit.get('message', 'No message')
+        author = commit.get('author', 'Unknown')
+        # Truncate long messages
+        if len(message) > 60:
+            message = message[:60] + '...'
+        response += f"\n{i}. `{sha}` - {message} ({author})"
+
+    if len(commits) > 5:
+        response += f"\n... and {len(commits) - 5} more commits"
+
+    # Include full data as JSON for Claude Code to analyze
+    response += f"""
+
+**Full Data for Analysis:**
+```json
+{json.dumps({
+    'repository': repo,
+    'analysis_period_days': data.get('analysis_period_days'),
+    'total_commits': data.get('total_commits'),
+    'unique_authors': data.get('unique_authors'),
+    'summary': data.get('summary'),
+    'commits': commits,
+    'diffs': diffs
+}, indent=2, default=str)}
+```"""
+
     return response
 
 
 def format_commit_diff_response(data: Dict[str, Any]) -> str:
-    """Format commit diff response."""
-    commit_info = data.get('commit', {})
-    diff_info = data.get('diff', {})
-    
+    """Format commit diff response with full data for Claude Code."""
+    import json
+
+    # The actual pipeline returns commit and diff data directly, not nested
+    commit_data = data.get('commit_data', {}) or data.get('commit', {})
+    file_changes = data.get('file_changes', [])
+    total_additions = data.get('total_additions', 0)
+    total_deletions = data.get('total_deletions', 0)
+
     response = f"""🔬 **Commit Diff Analysis**
 
-**Commit:** {commit_info.get('sha', 'unknown')[:8]}
-**Author:** {commit_info.get('author', 'unknown')}
-**Date:** {commit_info.get('authored_date', 'unknown')}
-**Message:** {commit_info.get('message', 'No message')}
+**Commit:** {commit_data.get('sha', 'unknown')[:8]}
+**Author:** {commit_data.get('author', 'Unknown')}
+**Date:** {commit_data.get('date', 'Unknown')}
+**Message:** {commit_data.get('message', 'No message')}
+**URL:** {commit_data.get('url', 'N/A')}
 
-**Changes:**
-- Files modified: {diff_info.get('files_modified_count', 0)}
-- Lines added: {diff_info.get('total_additions', 0)}
-- Lines deleted: {diff_info.get('total_deletions', 0)}
-- Net change: {diff_info.get('net_changes', 0)}"""
-    
-    # Add file-level details
-    file_changes = diff_info.get('file_changes', [])
-    if file_changes:
-        response += f"\n\n**Modified Files:**"
-        for file_change in file_changes[:10]:  # Limit to first 10 files
-            path = file_change.get('path', 'unknown')
-            added = file_change.get('lines_added', 0)
-            deleted = file_change.get('lines_deleted', 0)
-            change_type = file_change.get('change_type', 'modified')
-            
-            response += f"\n- {path} ({change_type}): +{added}/-{deleted}"
-    
+**Changes Summary:**
+- Files modified: {len(file_changes)}
+- Lines added: +{total_additions}
+- Lines deleted: -{total_deletions}
+- Net change: {total_additions - total_deletions:+d}
+
+**Modified Files Preview:**"""
+
+    # Show file changes preview
+    for i, file_change in enumerate(file_changes[:10], 1):
+        filename = file_change.get('filename', 'unknown')
+        additions = file_change.get('additions', 0)
+        deletions = file_change.get('deletions', 0)
+        status = file_change.get('status', 'modified')
+
+        response += f"\n{i}. `{filename}` ({status}): +{additions} -{deletions}"
+
+    if len(file_changes) > 10:
+        response += f"\n... and {len(file_changes) - 10} more files"
+
+    # Include full data as JSON for Claude Code to analyze
+    response += f"""
+
+**Full Data for Analysis:**
+```json
+{json.dumps(data, indent=2, default=str)}
+```"""
+
     return response
 
 
@@ -353,32 +387,72 @@ def format_repository_summary_response(data: Dict[str, Any]) -> str:
 
 
 def format_code_analysis_response(data: Dict[str, Any]) -> str:
-    """Format code analysis response."""
-    summary = data.get('summary', {})
-    focus_areas = data.get('focus_areas', {})
-    
+    """Format code analysis response with full data for Claude Code."""
+    import json
+
+    # Use actual data structure returned by the simplified pipeline
+    repo = data.get('repository', {})
+    commits = data.get('commits', [])
+    diffs = data.get('diffs', [])
+
+    # Calculate basic metrics from actual data
+    total_additions = sum(d.get('total_additions', 0) for d in diffs)
+    total_deletions = sum(d.get('total_deletions', 0) for d in diffs)
+    total_files_changed = sum(d.get('files_modified_count', 0) for d in diffs)
+
     response = f"""💡 **Code Analysis Report**
 
-**Work Focus:**
-- Primary context: {summary.get('primary_context', 'unknown').replace('_', ' ').title()}
-- Most active hour: {summary.get('most_active_hour', 'unknown')}
-- Average change size: {summary.get('average_change_size', 0):.1f} lines
-- Total lines changed: {summary.get('total_lines_changed', 0):,}"""
-    
-    # Add focus scores
-    focus_scores = summary.get('focus_scores', {})
-    if focus_scores:
-        response += f"\n\n**Development Focus Distribution:**"
-        for context, score in sorted(focus_scores.items(), key=lambda x: x[1], reverse=True):
-            response += f"\n- {context.replace('_', ' ').title()}: {score:.1%}"
-    
-    # Add development patterns
-    patterns = summary.get('development_patterns', [])
-    if patterns:
-        response += f"\n\n**Development Patterns:**"
-        for pattern in patterns:
-            response += f"\n- {pattern.replace('_', ' ').title()}"
-    
+**Repository:** {repo.get('full_name', 'Unknown')}
+**Language:** {repo.get('primary_language', 'Unknown')}
+**Analysis Period:** {data.get('analysis_period_days', 7)} days
+**Deep Analysis:** {data.get('deep_analysis', 'Unknown')}
+
+**Activity Summary:**
+- Total Commits: {data.get('total_commits', 0)}
+- Unique Authors: {data.get('unique_authors', 0)}
+- Lines Added: +{total_additions:,}
+- Lines Deleted: -{total_deletions:,}
+- Files Changed: {total_files_changed:,}
+
+**Code Quality Indicators:**"""
+
+    # Show quality indicators if available
+    quality_indicators = data.get('quality_indicators', {})
+    if quality_indicators:
+        for indicator, value in quality_indicators.items():
+            response += f"\n- {indicator.replace('_', ' ').title()}: {value}"
+
+    # Show hotspots if available
+    hotspots = data.get('hotspots', [])
+    if hotspots:
+        response += f"\n\n**File Hotspots (Top 5):**"
+        for i, hotspot in enumerate(hotspots[:5], 1):
+            path = hotspot.get('path', 'unknown')
+            changes = hotspot.get('change_frequency', 0)
+            response += f"\n{i}. `{path}` - {changes} changes"
+
+    # Show insights if available
+    insights = data.get('insights', [])
+    if insights:
+        response += f"\n\n**Insights:**"
+        for insight in insights[:5]:
+            response += f"\n- {insight}"
+
+    # Show recommendations if available
+    recommendations = data.get('recommendations', [])
+    if recommendations:
+        response += f"\n\n**Recommendations:**"
+        for i, rec in enumerate(recommendations[:5], 1):
+            response += f"\n{i}. {rec}"
+
+    # Include full data as JSON for Claude Code to analyze
+    response += f"""
+
+**Full Data for Analysis:**
+```json
+{json.dumps(data, indent=2, default=str)}
+```"""
+
     return response
 
 

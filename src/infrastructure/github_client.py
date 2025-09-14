@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-from core.utils.functional import Result, ok, err, safe, pipe, map_result
+from core.utils.functional import Result, ok, err, safe, pipe, map_result, flat_map
 from core.domain.errors import (
     GitHubAPIError, RepositoryNotFound, RateLimitExceeded,
     UnauthorizedAccess, ForbiddenAccess, NetworkError,
@@ -210,12 +210,12 @@ class GitHubAPIClient:
         """Get repository basic information."""
         if not self.http_client:
             return err(ValueError("Client not initialized. Use as context manager."))
-        
+
         endpoint = f"/repos/{owner}/{repo}"
-        
+
         return pipe(
             self.http_client.get(endpoint),
-            lambda result: map_result(transform_github_repo_response, result) if result else result
+            lambda result: flat_map(transform_github_repo_response, result) if result else result
         )
     
     def get_commits(
@@ -369,32 +369,72 @@ def fetch_repository_analysis_data(
     days: int = 7,
     max_commits: int = 100
 ) -> Result[tuple[RepositoryInfo, List[CommitData], List[DiffData]], Any]:
-    """Fetch all data needed for repository analysis."""
-    
-    # Calculate date range
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
-    
+    """Fetch all data needed for repository analysis.
+
+    Gets commits from the most recent N days that have actual commit activity.
+    This means if commits exist on days [10, 5, 3] and days=2,
+    it will return commits from days [10, 5] (the 2 most recent days with commits).
+    """
+
     try:
         with GitHubAPIClient() as client:
             # Get repository info
             repo_info_result = client.get_repository_info(owner, repo)
-            if not repo_info_result:
+            if not repo_info_result.is_ok():
                 return repo_info_result
-            
-            # Get commits with diffs
-            commits_diffs_result = client.get_commits_with_diffs(
-                owner, repo,
-                since=start_date,
-                until=end_date,
-                max_commits=max_commits
-            )
-            if not commits_diffs_result:
-                return commits_diffs_result
-            
-            commits, diffs = commits_diffs_result.value
-            
-            return ok((repo_info_result.value, commits, diffs))
+
+            repo_info = repo_info_result.unwrap()
+
+            # Step 1: Get recent commits to find days with actual activity
+            all_commits_result = client.get_commits(owner, repo, per_page=max_commits)
+            if not all_commits_result.is_ok():
+                return all_commits_result
+
+            all_commits = all_commits_result.unwrap()
+            if not all_commits:
+                # No commits in repository
+                return ok((repo_info, [], []))
+
+            # Step 2: Group commits by date and get the N most recent days with commits
+            from collections import defaultdict
+            commits_by_date = defaultdict(list)
+
+            for commit in all_commits:
+                commit_date = commit.authored_date.date()  # Get just the date part
+                commits_by_date[commit_date].append(commit)
+
+            # Sort dates and take the most recent N days that have commits
+            sorted_dates = sorted(commits_by_date.keys(), reverse=True)
+            recent_dates = sorted_dates[:days]  # Get the N most recent days with commits
+
+            # Collect all commits from those recent active days
+            commits = []
+            for date in recent_dates:
+                commits.extend(commits_by_date[date])
+
+            # Sort commits by date (newest first)
+            commits.sort(key=lambda c: c.authored_date, reverse=True)
+
+            # Step 3: Get diffs for each commit
+            # Always keep all commits, create empty diff if diff fetch fails
+            diffs = []
+
+            for commit in commits:
+                diff_result = client.get_commit_diff(owner, repo, commit.sha)
+                if diff_result.is_ok():
+                    diffs.append(diff_result.unwrap())
+                else:
+                    # Create empty diff for failed fetches to maintain commit count
+                    from core.domain.types import DiffData
+                    empty_diff = DiffData(
+                        commit_sha=commit.sha,
+                        file_changes=[],
+                        total_additions=0,
+                        total_deletions=0
+                    )
+                    diffs.append(empty_diff)
+
+            return ok((repo_info, commits, diffs))
             
     except Exception as e:
         return err(e)
@@ -402,30 +442,31 @@ def fetch_repository_analysis_data(
 
 def fetch_commit_details(owner: str, repo: str, commit_sha: str) -> Result[tuple[CommitData, DiffData], Any]:
     """Fetch detailed information for a specific commit."""
-    
+
     try:
         with GitHubAPIClient() as client:
-            # Get commit diff (includes commit info)
+            # Get commit diff
             diff_result = client.get_commit_diff(owner, repo, commit_sha)
-            if not diff_result:
+            if not diff_result.is_ok():
                 return diff_result
-            
-            # Get commit details
-            commits_result = client.get_commits(owner, repo, per_page=1)
-            if not commits_result:
-                return commits_result
-            
-            # Find the specific commit
-            target_commit = None
-            for commit in commits_result.value:
-                if commit.sha == commit_sha:
-                    target_commit = commit
-                    break
-            
-            if not target_commit:
+
+            # Get specific commit details using GitHub's commit API
+            commit_endpoint = f"/repos/{owner}/{repo}/commits/{commit_sha}"
+            commit_response = client.http_client.get(commit_endpoint)
+
+            if not commit_response.is_ok():
                 return err(ValueError(f"Commit {commit_sha} not found"))
-            
-            return ok((target_commit, diff_result.value))
+
+            commit_data = commit_response.unwrap()
+
+            # Transform GitHub API response to CommitData
+            from core.utils.data_transformation import transform_github_commit_response
+            commit_result = transform_github_commit_response(commit_data)
+
+            if not commit_result.is_ok():
+                return commit_result
+
+            return ok((commit_result.unwrap(), diff_result.unwrap()))
             
     except Exception as e:
         return err(e)
